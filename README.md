@@ -7,7 +7,7 @@ A responsive, local-first MVP for a personal wardrobe and outfit stylist. The pr
 ```text
 server.js             HTTP API, local JSON persistence, password hashing, sessions
 package.json          Start and smoke-test commands
-render.yaml           Render web service + persistent disk blueprint
+render.yaml           Render free web service blueprint
 .gitignore             Local data and secret exclusions
 public/index.html     App shell
 public/styles.css     Responsive design system and screen styles
@@ -41,9 +41,9 @@ Then open [http://localhost:3000](http://localhost:3000). Set `PORT` to change t
 
 The included `render.yaml` configures a free Node web service with a health check and HTTPS-secure session cookies. `autoDeploy: false` disables future automatic deploys on repository changes.
 
-1. Put the contents of this folder in a GitHub repository (do not upload `data/store.json` or secrets).
-2. In Render, choose **New → Blueprint**, connect the repository, and review the Blueprint.
-3. Create the free service. Render will show the public `onrender.com` URL when it is live.
+1. Open Render and sign in with GitHub.
+2. Choose **New → Blueprint**, select `gravebreath32-sudo/OUTFITAI`, and review the `render.yaml` settings.
+3. Apply the Blueprint to create the free service. Render will show the public `onrender.com` URL when the first deploy is live.
 
 Free services spin down after 15 minutes without traffic, and their filesystem is ephemeral. This app's JSON data may be lost when the service restarts or deploys; sessions also reset. Use this only as a public preview with test data, not real wardrobe photos or personal account data. For persistent real-user data, move accounts, wardrobe records, and uploaded images to Supabase Auth, Postgres with Row Level Security, and private Storage before launch. Do not put API secrets in the browser or commit `.env` files.
 

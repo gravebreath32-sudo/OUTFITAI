@@ -8,6 +8,7 @@ A responsive personal wardrobe and outfit styling MVP. It runs with Node.js buil
 server.js                         HTTP API and local demo-mode fallback
 supabase-provider.js              Server-side Supabase Auth, Postgres, and Storage adapter
 supabase/migrations/001_outfitai.sql  Tables, Row Level Security, and private image bucket
+supabase/migrations/002_billing.sql  Optional billing orders, entitlements, and usage limits
 render.yaml                       Render free web service blueprint
 public/index.html                 App shell
 public/styles.css                 Responsive design system
@@ -24,6 +25,7 @@ Supabase Auth owns account credentials and user IDs. The migration creates:
 - `saved_outfits` and `outfit_items`: saved looks and item relationships.
 - `outfit_plans`: calendar entries related to saved outfits.
 - A private `wardrobe` Storage bucket for clothing photos.
+- Optional Razorpay order verification and a manually renewed 30-day Plus pass.
 
 Row Level Security restricts each row and photo path to its owner. Normal database and image requests use the signed-in user's token. The server-only Supabase secret is used only for account deletion; never expose it in the browser.
 
@@ -61,7 +63,20 @@ Without Supabase environment variables, the app runs in clearly labeled local de
 - Wardrobe items support image uploads, categories, color, style, season, brand, edit, search, filters, favorites, and removal.
 - Outfit generation is a deterministic wardrobe-rules engine. It uses only the signed-in user's saved wardrobe and is not represented as a live AI service.
 - Saved outfits can be planned on the calendar. Weather is not fabricated; choose conditions manually when needed.
-- Inspiration photos are editorial references and are not presented as wardrobe photos. Premium, billing, real weather, and multimodal image recognition are not connected.
+- Inspiration photos are editorial references and are not presented as wardrobe photos. Real weather and multimodal image recognition are not connected.
+
+## Optional paid plan
+
+The app includes a **₹149 / 30-day OutfitAI Plus pass** scaffold. It is a one-time payment and does not renew automatically. The free plan stays useful; Plus raises the wardrobe limit from 50 to 500 items and removes the five-per-day outfit generation cap. Payment is off until the steps below are completed. Test with Razorpay test keys first; test payments do not collect real money.
+
+1. Create and activate a Razorpay merchant account yourself. Complete any identity/business checks Razorpay requests. Never share its keys in chat or commit them.
+2. In Supabase SQL Editor, run [`supabase/migrations/002_billing.sql`](supabase/migrations/002_billing.sql) after migration 001.
+3. In the Render service's Environment page, add `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, and a long random `RAZORPAY_WEBHOOK_SECRET`. Use test keys first.
+4. In Razorpay test-mode Webhooks, add `https://outfitai-qdjf.onrender.com/api/billing/webhook` and subscribe to the `payment.captured` event. Put the same webhook secret in Render.
+5. Set `OUTFITAI_BILLING_ENABLED=true` only after the migration, webhook, and keys are in place; then deploy/restart the service.
+6. Test a full checkout and verify the Plus expiry before switching to live Razorpay keys. The server checks Razorpay's checkout signature, confirms a captured payment with Razorpay, and accepts signed `payment.captured` webhooks before granting 30 days. A browser response alone never activates the plan.
+
+Razorpay checkout and database setup are required before the app can collect money. Without them the UI clearly reports setup is pending and requests no payment. The ₹149 price is a placeholder and can be changed in `supabase-provider.js` before launch. Revenue is not guaranteed: ten customers paying ₹149 would mean ₹1,490 gross for that 30-day period, before gateway fees, taxes, refunds, and any operating costs.
 
 ## Smoke test
 
@@ -70,3 +85,4 @@ npm test
 ```
 
 The provider smoke test uses a mocked Supabase API and needs no credentials. The local end-to-end test starts an isolated server and verifies sign-up, private wardrobe access, adding an item, outfit generation, saving, and logout.
+

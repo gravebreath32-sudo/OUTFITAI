@@ -4,6 +4,11 @@ const base = (process.env.SUPABASE_URL || '').replace(/\/$/, '');
 const apiKey = process.env.SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_ANON_KEY || '';
 const adminKey = process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 const enabled = Boolean(base && apiKey);
+const razorpayKeyId = process.env.RAZORPAY_KEY_ID || '';
+const razorpayKeySecret = process.env.RAZORPAY_KEY_SECRET || '';
+const razorpayWebhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET || '';
+const billingEnabled = Boolean(process.env.OUTFITAI_BILLING_ENABLED === 'true' && razorpayKeyId && razorpayKeySecret && razorpayWebhookSecret && adminKey);
+const plusPricePaise = 14900;
 const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
 const cookieFlags = `; HttpOnly; SameSite=Lax; Path=/${secure}`;
 
@@ -27,6 +32,15 @@ async function readBody(req) {
       try { resolve(value ? JSON.parse(value) : {}); }
       catch { reject(new ApiError(400, 'Invalid request data.')); }
     });
+    req.on('error', reject);
+  });
+}
+
+async function readRawBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = []; let size = 0;
+    req.on('data', chunk => { size += chunk.length; if (size > 8_000_000) reject(new ApiError(413, 'Request is too large.')); else chunks.push(chunk); });
+    req.on('end', () => resolve(Buffer.concat(chunks)));
     req.on('error', reject);
   });
 }
@@ -83,6 +97,40 @@ async function request(path, { token, method = 'GET', body, raw, contentType, ad
 
 async function authUser(token) {
   return request('/auth/v1/user', { token });
+}
+
+async function razorpay(path, body) {
+  if (!billingEnabled) throw new ApiError(503, 'OutfitAI Plus payments are not set up yet.');
+  let response;
+  try {
+    response = await fetch(`https://api.razorpay.com/v1${path}`, {
+      method: body ? 'POST' : 'GET',
+      headers: { Authorization: `Basic ${Buffer.from(`${razorpayKeyId}:${razorpayKeySecret}`).toString('base64')}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
+      ...(body ? { body: JSON.stringify(body) } : {})
+    });
+  } catch { throw new ApiError(503, 'Payment service is temporarily unreachable. Please try again.'); }
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new ApiError(502, 'The payment provider could not start checkout. Please try again later.');
+  return data;
+}
+
+function safeEqualHex(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string' || !/^[a-f0-9]{64}$/i.test(a) || !/^[a-f0-9]{64}$/i.test(b)) return false;
+  return crypto.timingSafeEqual(Buffer.from(a, 'hex'), Buffer.from(b, 'hex'));
+}
+
+async function recordPaidOrder(orderId, paymentId, user) {
+  const orders = await request(`/rest/v1/billing_orders?order_id=eq.${encodeURIComponent(orderId)}&user_id=eq.${encodeURIComponent(user.id)}&select=id,status`, { admin: true });
+  if (!orders.length) throw new ApiError(400, 'This payment does not match an OutfitAI order on your account.');
+  if (orders[0].status === 'paid') return;
+  const rows = await request(`/rest/v1/user_entitlements?user_id=eq.${encodeURIComponent(user.id)}&select=expires_at`, { admin: true });
+  const now = new Date();
+  const priorExpiry = rows[0]?.expires_at ? new Date(rows[0].expires_at) : now;
+  const start = priorExpiry > now ? priorExpiry : now;
+  const expiry = new Date(start.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString();
+  await request(`/rest/v1/billing_orders?order_id=eq.${encodeURIComponent(orderId)}`, { admin: true, method: 'PATCH', body: { payment_id: paymentId, status: 'paid', paid_at: now.toISOString() } });
+  if (rows.length) await request(`/rest/v1/user_entitlements?user_id=eq.${encodeURIComponent(user.id)}`, { admin: true, method: 'PATCH', body: { plan: 'plus', status: 'active', expires_at: expiry, updated_at: now.toISOString() } });
+  else await request('/rest/v1/user_entitlements', { admin: true, method: 'POST', body: { user_id: user.id, plan: 'plus', status: 'active', expires_at: expiry } });
 }
 
 async function refreshSession(refreshToken) {
@@ -194,6 +242,11 @@ async function listRows(table, query, user) {
   return request(`/rest/v1/${table}?${query}`, { token: user.access });
 }
 
+async function activePlus(user) {
+  const rows = await listRows('user_entitlements', 'select=plan,status,expires_at', user);
+  return rows[0]?.plan === 'plus' && rows[0]?.status === 'active' && new Date(rows[0].expires_at) > new Date();
+}
+
 function itemSummary(row) {
   return { id: row.id, name: row.name, category: row.category, color: row.color, style: row.style };
 }
@@ -242,7 +295,23 @@ function errorResponse(res, error) {
 
 async function handleApi(req, res, pathname) {
   try {
-    if (req.method === 'GET' && pathname === '/api/config') return send(res, 200, { mode: 'persistent', provider: 'Supabase' });
+    if (req.method === 'GET' && pathname === '/api/config') return send(res, 200, { mode: 'persistent', provider: 'Supabase', billingEnabled, plusPriceInr: plusPricePaise / 100 });
+    if (req.method === 'POST' && pathname === '/api/billing/webhook') {
+      if (!billingEnabled) throw new ApiError(503, 'Payment webhook is not configured.');
+      const raw = await readRawBody(req);
+      const expected = crypto.createHmac('sha256', razorpayWebhookSecret).update(raw).digest('hex');
+      if (!safeEqualHex(expected, req.headers['x-razorpay-signature'])) throw new ApiError(400, 'Invalid payment webhook signature.');
+      let event;
+      try { event = JSON.parse(raw.toString('utf8')); } catch { throw new ApiError(400, 'Invalid payment webhook data.'); }
+      if (event.event === 'payment.captured') {
+        const payment = event.payload?.payment?.entity;
+        if (!payment?.order_id || !payment?.id || payment.status !== 'captured') throw new ApiError(400, 'Payment webhook is missing required details.');
+        const orders = await request(`/rest/v1/billing_orders?order_id=eq.${encodeURIComponent(payment.order_id)}&select=user_id,amount,currency,status`, { admin: true });
+        if (!orders.length || Number(payment.amount) !== orders[0].amount || payment.currency !== orders[0].currency || payment.currency !== 'INR') throw new ApiError(400, 'Payment does not match an OutfitAI order.');
+        await recordPaidOrder(payment.order_id, payment.id, { id: orders[0].user_id });
+      }
+      return send(res, 200, { ok: true });
+    }
     if (req.method === 'POST' && pathname === '/api/signup') {
       const body = await readBody(req);
       if (!body.name?.trim() || !/^\S+@\S+\.\S+$/.test(body.email || '') || (body.password || '').length < 8) throw new ApiError(400, 'Add your name, a valid email and a password with at least 8 characters.');
@@ -299,6 +368,35 @@ async function handleApi(req, res, pathname) {
     }
     if (!user) throw new ApiError(401, 'Sign in to continue.');
 
+    if (req.method === 'GET' && pathname === '/api/billing/status') {
+      try {
+        const rows = await listRows('user_entitlements', 'select=plan,status,expires_at', user);
+        const entitlement = rows[0] || null;
+        const active = entitlement?.status === 'active' && new Date(entitlement.expires_at) > new Date();
+        return send(res, 200, { plan: active ? 'plus' : 'free', expiresAt: active ? entitlement.expires_at : null, billingEnabled });
+      } catch {
+        return send(res, 200, { plan: 'free', expiresAt: null, billingEnabled: false, setupRequired: true });
+      }
+    }
+    if (req.method === 'POST' && pathname === '/api/billing/order') {
+      if (!billingEnabled) throw new ApiError(503, 'Payments are not configured yet. Your account has not been charged.');
+      const order = await razorpay('/orders', { amount: plusPricePaise, currency: 'INR', receipt: `outfitai-${user.id.slice(0, 8)}-${Date.now()}`, notes: { outfitai_user_id: user.id, plan: 'plus' } });
+      await request('/rest/v1/billing_orders', { admin: true, method: 'POST', body: { user_id: user.id, order_id: order.id, amount: plusPricePaise, currency: 'INR', status: 'created' } });
+      return send(res, 201, { orderId: order.id, keyId: razorpayKeyId, amount: plusPricePaise, currency: 'INR', name: 'OutfitAI Plus', description: '30 days of OutfitAI Plus' });
+    }
+    if (req.method === 'POST' && pathname === '/api/billing/verify') {
+      if (!billingEnabled) throw new ApiError(503, 'Payments are not configured. No plan change was made.');
+      const body = await readBody(req);
+      const expected = crypto.createHmac('sha256', razorpayKeySecret).update(`${body.razorpay_order_id}|${body.razorpay_payment_id}`).digest('hex');
+      if (!safeEqualHex(expected, body.razorpay_signature)) throw new ApiError(400, 'Payment verification failed. Your plan has not changed.');
+      const payment = await razorpay(`/payments/${encodeURIComponent(body.razorpay_payment_id)}`);
+      if (payment.order_id !== body.razorpay_order_id || payment.status !== 'captured' || Number(payment.amount) !== plusPricePaise || payment.currency !== 'INR') {
+        throw new ApiError(400, 'Payment is not confirmed yet. If money was deducted, wait a moment and contact support before retrying.');
+      }
+      await recordPaidOrder(body.razorpay_order_id, body.razorpay_payment_id, user);
+      return send(res, 200, { ok: true, plan: 'plus', expiresInDays: 30 });
+    }
+
     if (req.method === 'POST' && pathname === '/api/password') {
       const body = await readBody(req);
       if (String(body.password || '').length < 8) throw new ApiError(400, 'Choose a password with at least 8 characters.');
@@ -313,6 +411,10 @@ async function handleApi(req, res, pathname) {
     if (req.method === 'POST' && pathname === '/api/items') {
       const body = await readBody(req);
       if (!body.name?.trim() || !body.category) throw new ApiError(400, 'Item name and category are required.');
+      const existingItems = await listRows('wardrobe_items', 'select=id', user);
+      const hasPlus = await activePlus(user).catch(() => false);
+      const itemLimit = hasPlus ? 500 : 50;
+      if (existingItems.length >= itemLimit) throw new ApiError(403, hasPlus ? 'Your Plus closet limit is 500 pieces.' : 'Your free closet has room for 50 pieces. OutfitAI Plus raises the limit to 500.');
       const row = fromItem(body, user.id);
       row.image_path = await uploadImage(user, row.id, body.image);
       try {
@@ -355,6 +457,15 @@ async function handleApi(req, res, pathname) {
     }
     if (req.method === 'POST' && pathname === '/api/recommend') {
       const options = await readBody(req);
+      const hasPlus = await activePlus(user).catch(() => false);
+      if (!hasPlus && billingEnabled) {
+        const dayStart = new Date(); dayStart.setHours(0, 0, 0, 0);
+        const used = await listRows('recommendation_usage', `select=id&created_at=gte.${encodeURIComponent(dayStart.toISOString())}`, user);
+        if (used.length >= 5) throw new ApiError(429, 'You’ve used today’s five free outfit generations. OutfitAI Plus gives you more.');
+        const outfits = await recommendation(user, options);
+        await request('/rest/v1/recommendation_usage', { token: user.access, method: 'POST', body: { user_id: user.id } });
+        return send(res, 200, { outfits, mode: 'wardrobe-rules' });
+      }
       return send(res, 200, { outfits: await recommendation(user, options), mode: 'wardrobe-rules' });
     }
     if (req.method === 'GET' && pathname === '/api/outfits') {
@@ -418,3 +529,4 @@ async function handleApi(req, res, pathname) {
 }
 
 module.exports = { enabled, handleApi };
+

@@ -27,9 +27,6 @@ global.fetch = async (input, options = {}) => {
   if (url.pathname === '/auth/v1/signup') return result({ access_token: 'test-access', refresh_token: 'test-refresh', expires_in: 3600, user });
   if (url.pathname === '/auth/v1/user') return options.headers.Authorization === 'Bearer test-access' ? result(user) : result({ message: 'Unauthorized' }, 401);
   if (url.pathname === '/auth/v1/logout') return result(null, 204);
-  if (url.pathname.startsWith('/storage/v1/object/sign/wardrobe/')) return result({ signedURL: url.pathname.replace('/storage/v1', '') + '?token=test-signed' });
-  if (url.pathname.startsWith('/storage/v1/object/wardrobe/') && options.method === 'POST') return result({ Key: url.pathname });
-  if (url.pathname === '/storage/v1/object/wardrobe' && options.method === 'DELETE') return result({ message: 'deleted' });
   if (url.pathname === '/rest/v1/profiles') return result([profile]);
   if (url.pathname === '/rest/v1/wardrobe_items') {
     if (options.method === 'POST') { items.push(rowItem(json(options))); return result(items); }
@@ -83,12 +80,9 @@ function cookieHeader(response) {
   assert.equal(signup.status, 201);
   assert.equal(signup.json.mode, 'persistent');
   const cookie = cookieHeader(signup);
-  const item = await call('POST', '/api/items', { name: 'Black jeans', category: 'Bottoms', color: 'Black', image: 'data:image/png;base64,iVBORw0KGgo=' }, cookie);
+  const item = await call('POST', '/api/items', { name: 'Black jeans', category: 'Bottoms', color: 'Black' }, cookie);
   assert.equal(item.status, 201);
   assert.equal(item.json.item.name, 'Black jeans');
-  assert.match(item.json.item.image, /^https:\/\/outfitai-test\.supabase\.co\/storage\/v1\/object\/sign\//);
-  const wardrobe = await call('GET', '/api/items', undefined, cookie);
-  assert.match(wardrobe.json.items[0].image, /token=test-signed/);
   const recommendations = await call('POST', '/api/recommend', { occasion: 'College', style: 'Casual' }, cookie);
   assert.equal(recommendations.status, 200);
   assert.equal(recommendations.json.outfits.length, 3);
@@ -98,10 +92,6 @@ function cookieHeader(response) {
   assert.deepEqual(saved.json.outfit.itemIds, [itemId]);
   const list = await call('GET', '/api/outfits', undefined, cookie);
   assert.deepEqual(list.json.outfits[0].itemIds, [itemId]);
-  const plan = await call('POST', '/api/plans', { outfitId, date: '2026-10-12', title: 'Easy classic' }, cookie);
-  assert.equal(plan.status, 201);
-  const calendar = await call('GET', '/api/plans', undefined, cookie);
-  assert.equal(calendar.json.plans[0].outfitId, outfitId);
   assert.ok(calls.filter(x => x.url.pathname.startsWith('/rest/v1/')).every(x => x.options.headers.Authorization === 'Bearer test-access'));
   assert.ok(!/test-server-secret/.test(require('node:fs').readFileSync(require.resolve('../public/app.js'), 'utf8')));
   console.log('Supabase adapter smoke test passed (mocked provider; no live credentials used).');

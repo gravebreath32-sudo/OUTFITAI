@@ -4,6 +4,7 @@ process.env.SUPABASE_URL = 'https://outfitai-test.supabase.co';
 process.env.SUPABASE_ANON_KEY = 'test-publishable-key';
 process.env.SUPABASE_SERVICE_ROLE_KEY = 'test-server-secret';
 process.env.NODE_ENV = 'test';
+process.env.OUTFITAI_BILLING_ENABLED = 'false';
 
 const uid = '11111111-1111-4111-8111-111111111111';
 const itemId = '22222222-2222-4222-8222-222222222222';
@@ -28,6 +29,7 @@ global.fetch = async (input, options = {}) => {
   if (url.pathname === '/auth/v1/user') return options.headers.Authorization === 'Bearer test-access' ? result(user) : result({ message: 'Unauthorized' }, 401);
   if (url.pathname === '/auth/v1/logout') return result(null, 204);
   if (url.pathname === '/rest/v1/profiles') return result([profile]);
+  if (url.pathname === '/rest/v1/user_entitlements') return result([]);
   if (url.pathname === '/rest/v1/wardrobe_items') {
     if (options.method === 'POST') { items.push(rowItem(json(options))); return result(items); }
     if (options.method === 'GET' && url.searchParams.get('select') === 'id') return result(items.map(x => ({ id: x.id })));
@@ -76,10 +78,20 @@ function cookieHeader(response) {
 }
 
 (async () => {
+  const config = await call('GET', '/api/config');
+  assert.equal(config.json.billingEnabled, false);
+  assert.equal(config.json.plusPriceInr, 149);
   const signup = await call('POST', '/api/signup', { name: 'Alex', email: user.email, password: 'wardrobe-test-password' });
   assert.equal(signup.status, 201);
   assert.equal(signup.json.mode, 'persistent');
   const cookie = cookieHeader(signup);
+  const billingStatus = await call('GET', '/api/billing/status', undefined, cookie);
+  assert.equal(billingStatus.status, 200);
+  assert.equal(billingStatus.json.plan, 'free');
+  assert.equal(billingStatus.json.billingEnabled, false);
+  const checkout = await call('POST', '/api/billing/order', {}, cookie);
+  assert.equal(checkout.status, 503);
+  assert.match(checkout.json.error, /not configured/i);
   const item = await call('POST', '/api/items', { name: 'Black jeans', category: 'Bottoms', color: 'Black' }, cookie);
   assert.equal(item.status, 201);
   assert.equal(item.json.item.name, 'Black jeans');
@@ -96,3 +108,4 @@ function cookieHeader(response) {
   assert.ok(!/test-server-secret/.test(require('node:fs').readFileSync(require.resolve('../public/app.js'), 'utf8')));
   console.log('Supabase adapter smoke test passed (mocked provider; no live credentials used).');
 })().catch(error => { console.error(error); process.exitCode = 1; });
+

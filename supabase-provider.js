@@ -120,17 +120,11 @@ function safeEqualHex(a, b) {
 }
 
 async function recordPaidOrder(orderId, paymentId, user) {
-  const orders = await request(`/rest/v1/billing_orders?order_id=eq.${encodeURIComponent(orderId)}&user_id=eq.${encodeURIComponent(user.id)}&select=id,status`, { admin: true });
-  if (!orders.length) throw new ApiError(400, 'This payment does not match an OutfitAI order on your account.');
-  if (orders[0].status === 'paid') return;
-  const rows = await request(`/rest/v1/user_entitlements?user_id=eq.${encodeURIComponent(user.id)}&select=expires_at`, { admin: true });
-  const now = new Date();
-  const priorExpiry = rows[0]?.expires_at ? new Date(rows[0].expires_at) : now;
-  const start = priorExpiry > now ? priorExpiry : now;
-  const expiry = new Date(start.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString();
-  await request(`/rest/v1/billing_orders?order_id=eq.${encodeURIComponent(orderId)}`, { admin: true, method: 'PATCH', body: { payment_id: paymentId, status: 'paid', paid_at: now.toISOString() } });
-  if (rows.length) await request(`/rest/v1/user_entitlements?user_id=eq.${encodeURIComponent(user.id)}`, { admin: true, method: 'PATCH', body: { plan: 'plus', status: 'active', expires_at: expiry, updated_at: now.toISOString() } });
-  else await request('/rest/v1/user_entitlements', { admin: true, method: 'POST', body: { user_id: user.id, plan: 'plus', status: 'active', expires_at: expiry } });
+  await request('/rest/v1/rpc/fulfill_outfitai_order', {
+    admin: true,
+    method: 'POST',
+    body: { p_order_id: orderId, p_payment_id: paymentId, p_user_id: user.id }
+  });
 }
 
 async function refreshSession(refreshToken) {
@@ -529,4 +523,5 @@ async function handleApi(req, res, pathname) {
 }
 
 module.exports = { enabled, handleApi };
+
 

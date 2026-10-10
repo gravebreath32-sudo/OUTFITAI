@@ -9,6 +9,7 @@ server.js                         HTTP API and local demo-mode fallback
 supabase-provider.js              Server-side Supabase Auth, Postgres, and Storage adapter
 supabase/migrations/001_outfitai.sql  Tables, Row Level Security, and private image bucket
 supabase/migrations/002_billing.sql  Optional billing orders, entitlements, and usage limits
+supabase/migrations/003_billing_atomic_fulfillment.sql  Idempotent paid-pass fulfillment
 render.yaml                       Render free web service blueprint
 public/index.html                 App shell
 public/styles.css                 Responsive design system
@@ -33,11 +34,11 @@ Row Level Security restricts each row and photo path to its owner. Normal databa
 
 1. Create a Supabase account and a project.
 2. In Supabase **SQL Editor**, run [`supabase/migrations/001_outfitai.sql`](supabase/migrations/001_outfitai.sql).
-3. In Supabase **Project Settings → API**, copy the Project URL, publishable/anon key, and secret/service-role key.
+3. In Supabase **Project Settings → API**, copy the Project URL, publishable key, and secret key.
 4. In Render, open the `outfitai` service → **Environment**. Set:
    - `SUPABASE_URL` to the Project URL.
-   - `SUPABASE_ANON_KEY` to the publishable/anon key.
-   - `SUPABASE_SERVICE_ROLE_KEY` to the secret/service-role key. Keep this server-side; do not send it in chat or commit it.
+   - `SUPABASE_PUBLISHABLE_KEY` to the publishable key.
+   - `SUPABASE_SECRET_KEY` to the secret key. Keep this server-side; do not send it in chat or commit it.
 5. Save changes and deploy the latest commit. Check `/api/config`; `{ "mode": "persistent" }` confirms the server is using Supabase.
 6. In Supabase **Authentication → URL Configuration**, set the Site URL to `https://outfitai-qdjf.onrender.com` and add `https://outfitai-qdjf.onrender.com/` to the redirect URL allowlist. Keep email confirmation enabled and configure email delivery before inviting real users.
 
@@ -70,13 +71,13 @@ Without Supabase environment variables, the app runs in clearly labeled local de
 The app includes a **₹149 / 30-day OutfitAI Plus pass** scaffold. It is a one-time payment and does not renew automatically. The free plan stays useful; Plus raises the wardrobe limit from 50 to 500 items and removes the five-per-day outfit generation cap. Payment is off until the steps below are completed. Test with Razorpay test keys first; test payments do not collect real money.
 
 1. Create and activate a Razorpay merchant account yourself. Complete any identity/business checks Razorpay requests. Never share its keys in chat or commit them.
-2. In Supabase SQL Editor, run [`supabase/migrations/002_billing.sql`](supabase/migrations/002_billing.sql) after migration 001.
+2. In Supabase SQL Editor, run [`supabase/migrations/002_billing.sql`](supabase/migrations/002_billing.sql) and then [`supabase/migrations/003_billing_atomic_fulfillment.sql`](supabase/migrations/003_billing_atomic_fulfillment.sql) after migration 001.
 3. In the Render service's Environment page, add `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, and a long random `RAZORPAY_WEBHOOK_SECRET`. Use test keys first.
 4. In Razorpay test-mode Webhooks, add `https://outfitai-qdjf.onrender.com/api/billing/webhook` and subscribe to the `payment.captured` event. Put the same webhook secret in Render.
 5. Set `OUTFITAI_BILLING_ENABLED=true` only after the migration, webhook, and keys are in place; then deploy/restart the service.
-6. Test a full checkout and verify the Plus expiry before switching to live Razorpay keys. The server checks Razorpay's checkout signature, confirms a captured payment with Razorpay, and accepts signed `payment.captured` webhooks before granting 30 days. A browser response alone never activates the plan.
+6. Test a full checkout and verify the Plus expiry before switching to live Razorpay keys. The server checks Razorpay's checkout signature, confirms a captured payment with Razorpay, and accepts signed `payment.captured` webhooks before granting 30 days. Fulfillment is atomic and idempotent, so duplicate webhooks do not add extra days. A browser response alone never activates the plan.
 
-Razorpay checkout and database setup are required before the app can collect money. Without them the UI clearly reports setup is pending and requests no payment. The ₹149 price is a placeholder and can be changed in `supabase-provider.js` before launch. Revenue is not guaranteed: ten customers paying ₹149 would mean ₹1,490 gross for that 30-day period, before gateway fees, taxes, refunds, and any operating costs.
+Razorpay checkout and database setup are required before the app can collect money. Without them the UI clearly reports setup is pending and requests no payment. The ₹149 price is a placeholder and can be changed in `supabase-provider.js` and migration 003 before launch. Seven customers paying ₹149 would mean ₹1,043 gross for that 30-day period, before gateway fees, taxes, refunds, and operating costs; revenue is not guaranteed.
 
 ## Smoke test
 
@@ -85,4 +86,5 @@ npm test
 ```
 
 The provider smoke test uses a mocked Supabase API and needs no credentials. The local end-to-end test starts an isolated server and verifies sign-up, private wardrobe access, adding an item, outfit generation, saving, and logout.
+
 

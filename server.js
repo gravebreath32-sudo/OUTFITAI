@@ -2,6 +2,7 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const persistentStore = require('./supabase-provider');
 
 const ROOT = __dirname;
 const STORE = process.env.OUTFITAI_STORE || path.join(ROOT, 'data', 'store.json');
@@ -20,6 +21,8 @@ function hash(password,salt){return crypto.scryptSync(password,salt,64).toString
 async function route(req,res){
  const url=new URL(req.url,'http://localhost'); const p=url.pathname;
  if(req.method==='GET'&&p==='/healthz')return send(res,200,{ok:true});
+ if(p.startsWith('/api/')&&persistentStore.enabled)return persistentStore.handleApi(req,res,p);
+ if(req.method==='GET'&&p==='/api/config')return send(res,200,{mode:'demo',provider:'local JSON'});
  if(req.method==='GET'&&p==='/api/session'){const u=userFor(req);return send(res,200,{user:u?publicUser(u):null});}
  if(req.method==='POST'&&p==='/api/signup'){
   const b=await body(req); if(!b.name?.trim()||!/^\S+@\S+\.\S+$/.test(b.email||'')||(b.password||'').length<8)return send(res,400,{error:'Add your name, a valid email and a password with at least 8 characters.'});
@@ -30,6 +33,7 @@ async function route(req,res){
   const b=await body(req);const u=readStore().users.find(x=>x.email===String(b.email||'').toLowerCase());if(!u||hash(b.password||'',u.salt)!==u.passwordHash)return send(res,401,{error:'Email or password is incorrect.'});const token=crypto.randomBytes(32).toString('hex');sessions.set(token,u.id);return send(res,200,{user:publicUser(u)},{'Set-Cookie':`outfitai_session=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=604800${process.env.NODE_ENV==='production'?'; Secure':''}`});
  }
  if(req.method==='POST'&&p==='/api/logout'){sessions.delete(cookie(req,'outfitai_session'));return send(res,200,{ok:true},{'Set-Cookie':'outfitai_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0'});}
+ if(req.method==='POST'&&p==='/api/recover')return send(res,501,{error:'Password recovery email is not configured in demo mode.'});
  const user=userFor(req);if(p.startsWith('/api/')&&!user)return send(res,401,{error:'Sign in to continue.'});
  if(req.method==='GET'&&p==='/api/items')return send(res,200,{items:readStore().items.filter(i=>i.userId===user.id)});
  if(req.method==='POST'&&p==='/api/items'){

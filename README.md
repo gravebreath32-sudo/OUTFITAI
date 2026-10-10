@@ -1,68 +1,72 @@
 # OutfitAI
 
-A responsive, local-first MVP for a personal wardrobe and outfit stylist. The project intentionally runs with Node.js built-ins only; it does not require a package install.
+A responsive personal wardrobe and outfit styling MVP. It runs with Node.js built-ins and can use Supabase Auth, Postgres, and private Storage for persistent accounts, wardrobe data, saved outfits, plans, and clothing photos.
 
 ## Project structure
 
 ```text
-server.js             HTTP API, local JSON persistence, password hashing, sessions
-package.json          Start and smoke-test commands
-render.yaml           Render free web service blueprint
-.gitignore             Local data and secret exclusions
-public/index.html     App shell
-public/styles.css     Responsive design system and screen styles
-public/app.js         Client UI and API interactions
-data/store.json       Created on first write; local account and wardrobe data
-tests/smoke.js        End-to-end API smoke test
+server.js                         HTTP API and local demo-mode fallback
+supabase-provider.js              Server-side Supabase Auth, Postgres, and Storage adapter
+supabase/migrations/001_outfitai.sql  Tables, Row Level Security, and private image bucket
+render.yaml                       Render free web service blueprint
+public/index.html                 App shell
+public/styles.css                 Responsive design system
+public/app.js                     UI and API interactions
+tests/smoke.js                    Local API smoke test
 ```
 
 ## Data model
 
-The local store contains four collections. IDs are UUIDs and user-owned records carry a `userId` foreign-key equivalent. Every read and mutation of a private collection is scoped to the authenticated user's session.
+Supabase Auth owns account credentials and user IDs. The migration creates:
 
-- **users**: `id`, `name`, `email`, `salt`, `passwordHash`, `preferences`, `createdAt`
-- **items**: `id`, `userId`, `name`, `category`, `color`, `style`, `season`, `occasion`, `brand`, `image`, `favorite`, `wears`, `createdAt`
-- **outfits**: `id`, `userId`, `name`, `itemIds[]`, `score`, `why`, `colorNote`, `tip`, `occasion`, `weather`, `savedAt`
-- **plans**: `id`, `userId`, `outfitId`, `title`, `date`, `occasion`, `notes`
+- `profiles`: name, email, and saved style preferences.
+- `wardrobe_items`: item metadata and private Storage object paths.
+- `saved_outfits` and `outfit_items`: saved looks and item relationships.
+- `outfit_plans`: calendar entries related to saved outfits.
+- A private `wardrobe` Storage bucket for clothing photos.
 
-Passwords are stored as salted scrypt hashes. The session token is random, held server-side, and delivered in an HttpOnly, SameSite cookie. The local JSON file and uploaded images are not a production storage service: deploy with a transactional database, durable session store, private object storage, TLS, CSRF controls, rate limits, and account recovery provider before serving real users.
+Row Level Security restricts each row and photo path to its owner. Normal database and image requests use the signed-in user's token. The server-only Supabase secret is used only for account deletion; never expose it in the browser.
+
+## Connect persistent storage
+
+1. Create a Supabase account and a project.
+2. In Supabase **SQL Editor**, run [`supabase/migrations/001_outfitai.sql`](supabase/migrations/001_outfitai.sql).
+3. In Supabase **Project Settings → API**, copy the Project URL, publishable/anon key, and secret/service-role key.
+4. In Render, open the `outfitai` service → **Environment**. Set:
+   - `SUPABASE_URL` to the Project URL.
+   - `SUPABASE_ANON_KEY` to the publishable/anon key.
+   - `SUPABASE_SERVICE_ROLE_KEY` to the secret/service-role key. Keep this server-side; do not send it in chat or commit it.
+5. Save changes and deploy the latest commit. Check `/api/config`; `{ "mode": "persistent" }` confirms the server is using Supabase.
+6. In Supabase **Authentication → URL Configuration**, set the Site URL to `https://outfitai-qdjf.onrender.com` and add `https://outfitai-qdjf.onrender.com/` to the redirect URL allowlist. Keep email confirmation enabled and configure email delivery before inviting real users.
+
+Until all three environment values and the migration are set, the app explicitly shows **Demo mode** and stores data in local JSON. Existing demo accounts and wardrobe records do not automatically transfer to Supabase; users should create new accounts after switching modes.
+
+## Free preview limits
+
+Render's free filesystem is ephemeral, so local demo-mode data can disappear on restart or deploy. Supabase Free stores data independently of Render deploys, but free projects can pause after a week of low activity, have usage limits, and do not include downloadable database backups. Restore a paused project in Supabase Studio. This is suitable for a small preview, not a durability guarantee for a production business. Keep independent exports and upgrade to a plan with backups before relying on real customer data.
 
 ## Run locally
 
-Requires Node.js 18 or newer.
+Requires Node.js 20 or newer.
 
 ```sh
 node server.js
 ```
 
-Then open [http://localhost:3000](http://localhost:3000). Set `PORT` to change the port. Create an account in the app and add at least two wardrobe pieces before generating outfits. Data is stored in `data/store.json`. Remove that file to reset the local demo data.
-
-## Free preview on Render
-
-The included `render.yaml` configures a free Node web service with a health check and HTTPS-secure session cookies. `autoDeploy: false` disables future automatic deploys on repository changes.
-
-1. Open Render and sign in with GitHub.
-2. Choose **New → Blueprint**, select `gravebreath32-sudo/OUTFITAI`, and review the `render.yaml` settings.
-3. Apply the Blueprint to create the free service. Render will show the public `onrender.com` URL when the first deploy is live.
-
-Free services spin down after 15 minutes without traffic, and their filesystem is ephemeral. This app's JSON data may be lost when the service restarts or deploys; sessions also reset. Use this only as a public preview with test data, not real wardrobe photos or personal account data. For persistent real-user data, move accounts, wardrobe records, and uploaded images to Supabase Auth, Postgres with Row Level Security, and private Storage before launch. Do not put API secrets in the browser or commit `.env` files.
+Without Supabase environment variables, the app runs in clearly labeled local demo mode. To run against Supabase, set the three variables from `.env.example` in your shell, apply the migration, and start the server. Do not commit `.env`.
 
 ## MVP behavior and boundaries
 
-- Sign up, sign in, sign out, and account deletion work locally. Password recovery displays an honest unavailable message because no mail provider is configured.
-- Wardrobe items support image uploads (5 MB limit), category, color, style, season, brand, edit, search, category filters, sort, favorites, and removal.
-- The outfit studio creates three combinations from the signed-in user's actual closet with understandable matching notes. This is a deterministic local wardrobe-rules engine, **not a live AI service**. It does not invent live weather; weather can be selected manually.
-- Saved outfits can be planned on the calendar. Inspiration photos are editorial references from Unsplash and are not presented as wardrobe photos.
-- Premium, billing, real weather, multimodal recognition, and real AI chat are not connected. There are no fake payment or AI success flows.
-
-## Environment variables
-
-No secrets or external API keys are required. `PORT` is optional. If AI, email recovery, weather, or payments are added, keep provider keys server-side in environment variables and validate every request on the server.
+- Supabase Auth handles account creation, sign-in, session refresh, email confirmation, password recovery, and account deletion when configured.
+- Wardrobe items support image uploads, categories, color, style, season, brand, edit, search, filters, favorites, and removal.
+- Outfit generation is a deterministic wardrobe-rules engine. It uses only the signed-in user's saved wardrobe and is not represented as a live AI service.
+- Saved outfits can be planned on the calendar. Weather is not fabricated; choose conditions manually when needed.
+- Inspiration photos are editorial references and are not presented as wardrobe photos. Premium, billing, real weather, and multimodal image recognition are not connected.
 
 ## Smoke test
 
 ```sh
-node tests/smoke.js
+npm test
 ```
 
-The test starts an isolated server on a temporary port and verifies account creation, private wardrobe access, item creation, three outfit recommendations using owned items, saved outfit access, and logout. It removes its temporary store afterward.
+The provider smoke test uses a mocked Supabase API and needs no credentials. The local end-to-end test starts an isolated server and verifies sign-up, private wardrobe access, adding an item, outfit generation, saving, and logout.
